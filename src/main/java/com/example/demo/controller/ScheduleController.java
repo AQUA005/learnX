@@ -42,6 +42,26 @@ public class ScheduleController {
 
     @PostMapping("/routine")
     public ResponseEntity<?> addRoutineItem(@RequestBody ScheduleItem item, Principal principal) {
+        if (principal == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "Unauthorized"));
+        }
+        com.example.demo.entity.User user = userRepository.findByUsername(principal.getName()).orElse(null);
+        if (user == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "User not found"));
+        }
+        if (user.getRole() != com.example.demo.entity.User.Role.CR && 
+            user.getRole() != com.example.demo.entity.User.Role.TEACHER && 
+            user.getRole() != com.example.demo.entity.User.Role.ADMIN) {
+            return ResponseEntity.status(403).body(Map.of("error", "Forbidden: Insufficient privileges"));
+        }
+
+        if (user.getRole() == com.example.demo.entity.User.Role.CR) {
+            if (user.getStudentClass() == null) {
+                return ResponseEntity.status(400).body(Map.of("error", "Bad Request: CR does not belong to a class"));
+            }
+            item.setStudentClass(user.getStudentClass());
+        }
+
         ScheduleItem saved = scheduleItemRepository.save(item);
         
         // Track Audit Log
@@ -61,9 +81,30 @@ public class ScheduleController {
 
     @PutMapping("/routine/{id}")
     public ResponseEntity<?> updateRoutineItem(@PathVariable Long id, @RequestBody ScheduleItem updated, Principal principal) {
+        if (principal == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "Unauthorized"));
+        }
+        com.example.demo.entity.User user = userRepository.findByUsername(principal.getName()).orElse(null);
+        if (user == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "User not found"));
+        }
+        if (user.getRole() != com.example.demo.entity.User.Role.CR && 
+            user.getRole() != com.example.demo.entity.User.Role.TEACHER && 
+            user.getRole() != com.example.demo.entity.User.Role.ADMIN) {
+            return ResponseEntity.status(403).body(Map.of("error", "Forbidden: Insufficient privileges"));
+        }
+
         ScheduleItem existing = scheduleItemRepository.findById(id).orElse(null);
         if (existing == null) {
             return ResponseEntity.notFound().build();
+        }
+
+        if (user.getRole() == com.example.demo.entity.User.Role.CR) {
+            if (user.getStudentClass() == null || existing.getStudentClass() == null || 
+                !existing.getStudentClass().getId().equals(user.getStudentClass().getId())) {
+                return ResponseEntity.status(403).body(Map.of("error", "Forbidden: You cannot modify schedules for another class"));
+            }
+            updated.setStudentClass(user.getStudentClass());
         }
 
         String details = String.format("Updated Routine Class: Day changed from '%s' to '%s', Time from %s-%s to %s-%s, Course from '%s' to '%s', Room from '%s' to '%s', Teacher '%s' to '%s'",
@@ -76,6 +117,9 @@ public class ScheduleController {
         existing.setCourseName(updated.getCourseName());
         existing.setRoomNo(updated.getRoomNo());
         existing.setTeacherName(updated.getTeacherName());
+        if (updated.getStudentClass() != null) {
+            existing.setStudentClass(updated.getStudentClass());
+        }
 
         ScheduleItem saved = scheduleItemRepository.save(existing);
 
@@ -93,9 +137,29 @@ public class ScheduleController {
 
     @DeleteMapping("/routine/{id}")
     public ResponseEntity<?> deleteRoutineItem(@PathVariable Long id, Principal principal) {
+        if (principal == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "Unauthorized"));
+        }
+        com.example.demo.entity.User user = userRepository.findByUsername(principal.getName()).orElse(null);
+        if (user == null) {
+            return ResponseEntity.status(401).body(Map.of("error", "User not found"));
+        }
+        if (user.getRole() != com.example.demo.entity.User.Role.CR && 
+            user.getRole() != com.example.demo.entity.User.Role.TEACHER && 
+            user.getRole() != com.example.demo.entity.User.Role.ADMIN) {
+            return ResponseEntity.status(403).body(Map.of("error", "Forbidden: Insufficient privileges"));
+        }
+
         ScheduleItem existing = scheduleItemRepository.findById(id).orElse(null);
         if (existing == null) {
             return ResponseEntity.notFound().build();
+        }
+
+        if (user.getRole() == com.example.demo.entity.User.Role.CR) {
+            if (user.getStudentClass() == null || existing.getStudentClass() == null || 
+                !existing.getStudentClass().getId().equals(user.getStudentClass().getId())) {
+                return ResponseEntity.status(403).body(Map.of("error", "Forbidden: You cannot delete schedules for another class"));
+            }
         }
 
         String details = String.format("Deleted Routine Class: Course '%s', Day '%s', Time %s-%s, Room '%s', Teacher '%s'",

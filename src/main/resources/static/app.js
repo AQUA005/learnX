@@ -1849,6 +1849,8 @@ async function submitExamAnswers(examId, autoSubmit = false) {
 }
 
 // --- VIEW: ROUTINE / SCHEDULER MANAGER ---
+let editingRoutineId = null;
+
 function renderRoutineManager(container) {
     if (state.user.role === 'STUDENT') {
         renderStudentSchedule(container);
@@ -1902,7 +1904,7 @@ function renderRoutineManager(container) {
 
             <!-- Right Panel: Routine Scheduler Builder -->
             <div class="glass-panel section-card">
-                <h3>Add Routine Class Slot</h3>
+                <h3 id="routine-form-title">Add Routine Class Slot</h3>
                 <form id="form-create-routine" style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem;">
                     <div class="form-group" style="grid-column: 1 / -1;">
                         <label for="rt-course">Course Name</label>
@@ -1936,16 +1938,56 @@ function renderRoutineManager(container) {
                         <label for="rt-teacher">Teacher Name</label>
                         <input type="text" id="rt-teacher" class="form-input" required placeholder="e.g. Dr. Mahfuzur Rahman">
                     </div>
-                    <button type="submit" class="btn" style="grid-column: 1 / -1; margin-top: 0.5rem;">
-                        <i class="fa-solid fa-plus"></i> Add Routine Class
-                    </button>
+                    <div style="grid-column: 1 / -1; display: flex; gap: 1rem; margin-top: 0.5rem;">
+                        <button type="submit" id="btn-routine-submit" class="btn" style="flex: 1;">
+                            <i class="fa-solid fa-plus"></i> Add Routine Class
+                        </button>
+                        <button type="button" id="btn-routine-cancel" class="btn btn-secondary" style="flex: 1; display: none;">
+                            <i class="fa-solid fa-xmark"></i> Cancel Edit
+                        </button>
+                    </div>
                 </form>
+            </div>
+        </div>
+
+        <!-- Full Width Panel: Existing Routine Slots List -->
+        <div class="glass-panel section-card" style="margin-top: 2rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; border-bottom: 1px solid var(--glass-border); padding-bottom: 1rem;">
+                <h3>Current Class Routine Slots</h3>
+                <span class="tag" style="background: rgba(var(--accent-blue-rgb), 0.15); color: var(--accent-blue); padding: 0.25rem 0.75rem; border-radius: 20px; font-weight: 600; font-size: 0.8rem;">
+                    ${state.user.studentClass ? state.user.studentClass.className : 'All Classes'}
+                </span>
+            </div>
+            <div class="routine-table-container">
+                <table class="routine-table">
+                    <thead>
+                        <tr>
+                            <th>Day</th>
+                            <th>Time Slot</th>
+                            <th>Course Name</th>
+                            <th>Room No</th>
+                            <th>Teacher Name</th>
+                            <th style="text-align: center; width: 180px;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="routine-list-tbody">
+                        <tr><td colspan="6" style="text-align: center; color: var(--text-secondary);"><i class="fa-solid fa-spinner fa-spin"></i> Loading scheduled routine classes...</td></tr>
+                    </tbody>
+                </table>
             </div>
         </div>
     `;
 
     document.getElementById('form-create-ct').addEventListener('submit', handleAnnounceCt);
     document.getElementById('form-create-routine').addEventListener('submit', handleAddRoutine);
+    
+    const cancelBtn = document.getElementById('btn-routine-cancel');
+    if (cancelBtn) {
+        cancelBtn.addEventListener('click', cancelEditRoutine);
+    }
+
+    editingRoutineId = null;
+    loadRoutineManagerList();
 }
 
 async function handleAnnounceCt(e) {
@@ -1983,18 +2025,163 @@ async function handleAddRoutine(e) {
     const endTime = document.getElementById('rt-end').value + ":00";
     const teacherName = document.getElementById('rt-teacher').value;
 
+    const payload = { courseName, dayOfWeek, roomNo, startTime, endTime, teacherName };
+
     try {
-        const res = await apiFetch('/api/schedule/routine', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ courseName, dayOfWeek, roomNo, startTime, endTime, teacherName })
+        let res;
+        if (editingRoutineId) {
+            res = await apiFetch(`/api/schedule/routine/${editingRoutineId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        } else {
+            res = await apiFetch('/api/schedule/routine', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        }
+
+        if (res && res.ok) {
+            if (editingRoutineId) {
+                showToast("Routine class updated successfully!");
+                cancelEditRoutine();
+            } else {
+                showToast("Routine class scheduled successfully!");
+                document.getElementById('form-create-routine').reset();
+            }
+            loadRoutineManagerList();
+        } else {
+            const errData = res ? await res.json().catch(() => ({})) : {};
+            const errMsg = errData.error || "Error saving routine slot";
+            showToast(errMsg, "error");
+        }
+    } catch (e) {
+        showToast("Connection failed", "error");
+    }
+}
+
+async function loadRoutineManagerList() {
+    const tbody = document.getElementById('routine-list-tbody');
+    if (!tbody) return;
+
+    try {
+        const res = await apiFetch('/api/schedule/routine');
+        if (!res || !res.ok) {
+            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--danger);">Failed to load routine slots.</td></tr>`;
+            return;
+        }
+
+        const routines = await res.json();
+        tbody.innerHTML = '';
+
+        if (routines.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-secondary);">No scheduled routine classes.</td></tr>`;
+            return;
+        }
+
+        const dayOrder = { 'MONDAY': 1, 'TUESDAY': 2, 'WEDNESDAY': 3, 'THURSDAY': 4, 'FRIDAY': 5, 'SATURDAY': 6, 'SUNDAY': 7 };
+        routines.sort((a, b) => {
+            const dayA = dayOrder[a.dayOfWeek] || 99;
+            const dayB = dayOrder[b.dayOfWeek] || 99;
+            if (dayA !== dayB) return dayA - dayB;
+            return a.startTime.localeCompare(b.startTime);
+        });
+
+        routines.forEach(item => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td style="font-weight: 600; color: var(--accent-blue);">${item.dayOfWeek}</td>
+                <td style="white-space: nowrap;">${item.startTime.substring(0, 5)} - ${item.endTime.substring(0, 5)}</td>
+                <td style="font-weight: 500;">${item.courseName}</td>
+                <td><span class="tag" style="background: rgba(255,255,255,0.08); border: 1px solid var(--glass-border);">${item.roomNo}</span></td>
+                <td>${item.teacherName || 'N/A'}</td>
+                <td style="text-align: center;">
+                    <div style="display: flex; gap: 0.5rem; justify-content: center;">
+                        <button class="btn btn-edit-routine" data-id="${item.id}" style="padding: 0.35rem 0.65rem; font-size: 0.75rem; width: auto; background: linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-indigo) 100%);">
+                            <i class="fa-solid fa-pen-to-square"></i> Edit
+                        </button>
+                        <button class="btn btn-danger btn-delete-routine" data-id="${item.id}" style="padding: 0.35rem 0.65rem; font-size: 0.75rem; width: auto; background: linear-gradient(135deg, var(--danger) 0%, #dc2626 100%);">
+                            <i class="fa-solid fa-trash"></i> Delete
+                        </button>
+                    </div>
+                </td>
+            `;
+
+            row.querySelector('.btn-edit-routine').addEventListener('click', () => startEditRoutine(item));
+            row.querySelector('.btn-delete-routine').addEventListener('click', () => handleDeleteRoutine(item.id));
+
+            tbody.appendChild(row);
+        });
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--danger);">Connection failed.</td></tr>`;
+    }
+}
+
+function startEditRoutine(item) {
+    editingRoutineId = item.id;
+    
+    const title = document.getElementById('routine-form-title');
+    if (title) title.innerText = "Edit Routine Class Slot";
+
+    const submitBtn = document.getElementById('btn-routine-submit');
+    if (submitBtn) {
+        submitBtn.innerHTML = `<i class="fa-solid fa-floppy-disk"></i> Save Changes`;
+        submitBtn.style.background = `linear-gradient(135deg, #10b981 0%, #059669 100%)`;
+    }
+
+    const cancelBtn = document.getElementById('btn-routine-cancel');
+    if (cancelBtn) cancelBtn.style.display = 'inline-block';
+
+    document.getElementById('rt-course').value = item.courseName;
+    document.getElementById('rt-day').value = item.dayOfWeek;
+    document.getElementById('rt-room').value = item.roomNo;
+    document.getElementById('rt-start').value = item.startTime.substring(0, 5);
+    document.getElementById('rt-end').value = item.endTime.substring(0, 5);
+    document.getElementById('rt-teacher').value = item.teacherName || '';
+    
+    document.getElementById('form-create-routine').scrollIntoView({ behavior: 'smooth' });
+}
+
+function cancelEditRoutine() {
+    editingRoutineId = null;
+
+    const title = document.getElementById('routine-form-title');
+    if (title) title.innerText = "Add Routine Class Slot";
+
+    const submitBtn = document.getElementById('btn-routine-submit');
+    if (submitBtn) {
+        submitBtn.innerHTML = `<i class="fa-solid fa-plus"></i> Add Routine Class`;
+        submitBtn.style.background = `linear-gradient(135deg, var(--accent-blue) 0%, var(--accent-indigo) 100%)`;
+    }
+
+    const cancelBtn = document.getElementById('btn-routine-cancel');
+    if (cancelBtn) cancelBtn.style.display = 'none';
+
+    document.getElementById('form-create-routine').reset();
+}
+
+async function handleDeleteRoutine(id) {
+    if (!confirm("Are you sure you want to delete this routine class slot?")) {
+        return;
+    }
+
+    try {
+        const res = await apiFetch(`/api/schedule/routine/${id}`, {
+            method: 'DELETE'
         });
 
         if (res && res.ok) {
-            showToast("Routine class scheduled successfully!");
-            document.getElementById('form-create-routine').reset();
+            showToast("Routine class deleted successfully!");
+            if (editingRoutineId === id) {
+                cancelEditRoutine();
+            }
+            loadRoutineManagerList();
         } else {
-            showToast("Error saving routine slot", "error");
+            const errData = res ? await res.json().catch(() => ({})) : {};
+            const errMsg = errData.error || "Error deleting routine slot";
+            showToast(errMsg, "error");
         }
     } catch (e) {
         showToast("Connection failed", "error");
